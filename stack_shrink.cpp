@@ -48,6 +48,15 @@ const char * fmt_state( DWORD state ) {
     }
 }
 
+const char * fmt_type( DWORD state ) {
+    switch ( state ) {
+    case MEM_IMAGE: return "IMAGE ";
+    case MEM_MAPPED: return "FMAPPED   ";
+    case MEM_PRIVATE: return "PRIVATE";
+    default: return "unknown";
+    }
+}
+
 void DbgDumpStack()
 {
 //#ifdef _DEBUG
@@ -67,6 +76,7 @@ void DbgDumpStack()
                   << " - " << fmt_hex( (SIZE_T)pPos + stMemBasicInfo.RegionSize )
                   << " Protect = " << fmt_hex( stMemBasicInfo.Protect )
                   << " State = " << fmt_state( stMemBasicInfo.State )
+                  << " Type = " << fmt_type( stMemBasicInfo.Type )
                   << std::dec
                   << " Pages = " << stMemBasicInfo.RegionSize / g_dwProcessorPageSize
                   << std::endl;
@@ -110,9 +120,7 @@ void StackShrink()
     VERIFY( VirtualQuery( stMemBasicInfo.AllocationBase, &stMemBasicInfo, sizeof( stMemBasicInfo ) ) );
     VERIFY( stMemBasicInfo.State == MEM_RESERVE );
 
-    PBYTE pFirstAllocated =
-        ((PBYTE)stMemBasicInfo.BaseAddress) +
-        stMemBasicInfo.RegionSize;
+    PBYTE pFirstAllocated = ((PBYTE)stMemBasicInfo.BaseAddress) + stMemBasicInfo.RegionSize;
     if ( pFirstAllocated <= pFree )
     {
         // Obviously the stack doesn't
