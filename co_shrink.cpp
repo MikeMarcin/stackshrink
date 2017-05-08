@@ -4,6 +4,22 @@
 #include <iostream>
 #include <iomanip>
 #include <Psapi.h>
+#include <chrono>
+#include <tchar.h>
+
+class timer {
+private:
+    std::chrono::time_point<std::chrono::high_resolution_clock> start_time;
+public:
+    void start() {
+        start_time = std::chrono::high_resolution_clock::now();
+    }
+
+    double stop() {
+        auto stop_time = std::chrono::high_resolution_clock::now();
+        return std::chrono::duration<double>( stop_time - start_time ).count();
+    }
+};
 
 template< typename T >
 struct hex_fmt_t {
@@ -55,13 +71,13 @@ void DbgDumpStack( PBYTE pPtr ) {
         BOOST_VERIFY( VirtualQuery( pPos, &stMemBasicInfo, sizeof( stMemBasicInfo ) ) );
         BOOST_VERIFY( stMemBasicInfo.RegionSize );
 
-        std::cout << "### Range: " << fmt_hex( (SIZE_T)pPos )
+        std::cout << "Range: " << fmt_hex( (SIZE_T)pPos )
                   << " - " << fmt_hex( (SIZE_T)pPos + stMemBasicInfo.RegionSize )
-                  << " Protect = " << fmt_hex( stMemBasicInfo.Protect )
-                  << " State = " << fmt_state( stMemBasicInfo.State )
-                  << " Type = " << fmt_type( stMemBasicInfo.Type )
+                  << " Protect: " << fmt_hex( stMemBasicInfo.Protect )
+                  << " State: " << fmt_state( stMemBasicInfo.State )
+                  //<< " Type: " << fmt_type( stMemBasicInfo.Type )
                   << std::dec
-                  << " Pages = " << stMemBasicInfo.RegionSize / page_size
+                  << " Pages: " << stMemBasicInfo.RegionSize / page_size
                   << std::endl;
 
         pPos += stMemBasicInfo.RegionSize;
@@ -78,7 +94,7 @@ void DbgDumpStack() {
     DbgDumpStack( pPtr );
 }
 
-void StackShrink() {
+PBYTE StackShrink() {
     PBYTE sp = GetStackPointer();
 
     const auto page_size = boost::context::stack_traits::page_size();
@@ -118,6 +134,25 @@ void StackShrink() {
         // Make the guard page.
         BOOST_VERIFY( VirtualAlloc( pGuard, page_size, MEM_COMMIT, PAGE_READWRITE | PAGE_GUARD ) );
     }
+    return pFirstAllocated;
+}
+
+void StackCommit() {
+    PBYTE sp = GetStackPointer();
+
+    const auto page_size = boost::context::stack_traits::page_size();
+
+    // Get the stack last page.
+    MEMORY_BASIC_INFORMATION stMemBasicInfo;
+    BOOST_VERIFY( VirtualQuery( sp, &stMemBasicInfo, sizeof( stMemBasicInfo ) ) );
+    PBYTE pCur = (PBYTE)stMemBasicInfo.BaseAddress;
+
+    // Get the base of the stack
+    // Commit everything except the last page
+    PBYTE pCommit = (PBYTE)stMemBasicInfo.AllocationBase + page_size;
+    if ( pCommit < pCur ) {
+        BOOST_VERIFY( VirtualAlloc( pCommit, pCur - pCommit, MEM_COMMIT, PAGE_READWRITE ) );
+    }
 }
 
 void StackConsume( PBYTE pPtr, DWORD dwSizeExtra ) {
@@ -144,16 +179,13 @@ public:
     typedef boost::context::stack_context stack_context;
 
     reserved_fixedsize_stack( std::size_t size = traits_type::default_size() ) BOOST_NOEXCEPT_OR_NOTHROW :
-    size_( size ) {
+        size_( size ) {
     }
 
     stack_context allocate() {
         const auto one_page_size = traits_type::page_size();
         // page at bottom will be used as guard-page
-        const std::size_t pages(
-            static_cast< std::size_t >(
-                std::floor(
-                    static_cast< float >(size_) / one_page_size )) );
+        const std::size_t pages( static_cast< std::size_t >( std::floor( static_cast< float >(size_) / one_page_size )) );
         BOOST_ASSERT_MSG( 1 <= pages, "at least one page must fit into stack" );
         const std::size_t size__( pages * one_page_size );
         BOOST_ASSERT( 0 != size_ && 0 != size__ );
@@ -163,11 +195,13 @@ public:
         void * vp = ::VirtualAlloc( 0, size__, MEM_RESERVE, PAGE_READWRITE );
         if ( !vp ) goto error;
 
-        const auto two_page_size = one_page_size + one_page_size;
-        auto pPtr = static_cast<PBYTE>( vp ) + size__;
-        pPtr -= two_page_size;
-        if ( !VirtualAlloc( pPtr, two_page_size, MEM_COMMIT, PAGE_READWRITE ) )  goto cleanup;
+        // needs at least 2 pages to fully construct the coroutine and switch to it
+        const auto init_commit_size = one_page_size + one_page_size;
+        auto pPtr = static_cast<PBYTE>(vp) + size__;
+        pPtr -= init_commit_size;
+        if ( !VirtualAlloc( pPtr, init_commit_size, MEM_COMMIT, PAGE_READWRITE ) )  goto cleanup;
 
+        // create guard page so the OS can catch page faults and grow our stack
         pPtr -= one_page_size;
         if ( !VirtualAlloc( pPtr, one_page_size, MEM_COMMIT, PAGE_READWRITE | PAGE_GUARD ) ) goto cleanup;
 
@@ -187,6 +221,7 @@ public:
         ::VirtualFree( vp, 0, MEM_RELEASE );
     }
 };
+
 
 void TestStack( const char * which ) {
     std::cout << "\n@@@@@ BEGIN STACK TEST - " << which << " @@@@@" << std::endl;
@@ -214,46 +249,163 @@ void TestStack( const char * which ) {
 void DbgDumpMemoryUsage() {
     PROCESS_MEMORY_COUNTERS memCounter;
     BOOL result = GetProcessMemoryInfo( GetCurrentProcess(), &memCounter, sizeof( memCounter ) );
-    std::cout << "##### Process Memory - " << std::fixed << std::setprecision( 2 ) << (double)memCounter.WorkingSetSize / (1024 * 1024) << "MB #####" << std::endl;
+    std::cout << "##### Process Memory - " << std::fixed << std::setprecision( 2 ) << (double)memCounter.WorkingSetSize / (1024 * 1024) << "MB" << std::endl;
 }
 
+
+#if 0
+
+class stack_compactor {
+public:
+    void compact() {
+        m_high_water_mark = StackShrink();
+    }
+    void decompact() {
+        const auto page_size = boost::context::stack_traits::page_size();
+        PBYTE sp = GetStackPointer();
+        PBYTE pStack = sp - ((uintptr_t)sp & (page_size - 1)) - page_size;
+        PBYTE pGuard = m_high_water_mark;
+        PBYTE pAllocate = pGuard + page_size;
+        if ( pAllocate < pStack ) {
+            // Make the guard page.
+            BOOST_VERIFY( VirtualAlloc( pAllocate, pStack - pAllocate, MEM_COMMIT, PAGE_READWRITE ) );
+            BOOST_VERIFY( VirtualAlloc( pGuard, page_size, MEM_COMMIT, PAGE_READWRITE | PAGE_GUARD ) );
+        }
+    }
+private:
+    PBYTE m_high_water_mark;
+};
+
+
+#if 0
+
 int main() {
+    std::cout << "Large pages?:" << GetLargePageMinimum() << std::endl;
+    // DbgDumpMemoryUsage();
     using think_co = boost::coroutines2::coroutine< bool >;
 
-    reserved_fixedsize_stack stack{ 1 * 1024 * 1024 };
+    using stack_t = boost::coroutines2::fixedsize_stack;
+    using stack_t = reserved_fixedsize_stack;
+    stack_t stack{ 1 * 1024 * 1024 };
+
+    timer time;
 
     std::vector<think_co::push_type> entities;
-    for ( int i = 0; i < 10'000; ++i ) {
+    for ( int i = 0; i < 1; ++i ) {
         entities.emplace_back( 
             think_co::push_type( stack,
                 [&]( think_co::pull_type & c ) {
-                    //TestStack( "coro" );
-                    if ( c.get() ) DbgDumpStack();
-                    StackConsume( 900 * 1024 );
-                    c();
-                    if ( c.get() ) DbgDumpStack();
-                    StackShrink();
-                    c();
-                    if ( c.get() ) DbgDumpStack();
-                    StackConsume( 900 * 1024 );
-                    c();
-                    if ( c.get() ) DbgDumpStack();
+                    for ( ;; ) {
+                        //TestStack( "coro" );
+                        stack_compactor sc;
+                        // if ( c.get() ) DbgDumpStack();
+                        StackConsume( 900 * 1024 );
+                        // if ( c.get() ) DbgDumpStack();
+                        //sc.compact();
+                        if ( !c.get() ) {
+                            c();
+                            //sc.decompact();
+                        }                        
+                        // if ( c.get() ) DbgDumpStack();
+                    }                    
                 } )
         );
     }
+    
+
     //TestStack( "main" );
 
-    DbgDumpMemoryUsage();
-    for ( int i = 0; i < 4; ++i ) {
-        bool dump = true;
+    // DbgDumpMemoryUsage();
+    bool quit = false;
+    for ( int i = 0; i < 5; ++i ) {
+        quit = (i == 4);
+        time.start();
         for ( auto & think : entities ) {
-            think( dump );
-            dump = false;
+            think( quit );
         }
-        DbgDumpMemoryUsage();
-    }     
-
+        auto t = time.stop();
+        std::cout << "time: " << t << std::endl;
+    }
+    // DbgDumpMemoryUsage();
+    
     entities.clear();
-    DbgDumpMemoryUsage();
+    // DbgDumpMemoryUsage();
     return 0;
 }
+#endif
+#endif
+
+#if 0
+#include <windows.h>
+#include <iostream>
+
+int main() {
+    constexpr int64_t one_mb = (1 << 20);
+    constexpr int64_t one_tb = one_mb * (1 << 20);
+    for ( int64_t n = 1;; ++n ) {
+        auto p = VirtualAlloc( 0, n * one_tb, MEM_RESERVE, PAGE_READWRITE );
+        if ( p == nullptr ) {
+            std::cout << "Reserved up to " << n << "TB." << std::endl;
+            return 0;
+        }
+        VirtualFree( p, 0, MEM_RELEASE );
+    }
+}
+#endif
+
+# if 0
+int main() {
+    using think_co = boost::coroutines2::coroutine< void >;
+    using stack_t = reserved_fixedsize_stack;
+    stack_t stack{ 1 * 1024 * 1024 };
+    think_co::push_type think{ stack, [&]( think_co::pull_type& c ) { DbgDumpStack(); } };
+    think();
+    return 0;
+}
+
+#endif
+
+#if 1
+class timer_t {
+private:
+    std::chrono::time_point<std::chrono::high_resolution_clock> start_time;
+public:
+    timer_t() {
+        start_time = std::chrono::high_resolution_clock::now();
+    }
+
+    double stop() {
+        auto stop_time = std::chrono::high_resolution_clock::now();
+        return std::chrono::duration<double>( stop_time - start_time ).count();
+    }
+};
+
+int main() {
+    using think_co = boost::coroutines2::coroutine< void >;
+    using stack_t = reserved_fixedsize_stack;
+    int count = 1'000'000;
+    size_t stack_size = 1 * 1024 * 1024;
+    std::vector<think_co::push_type> thinks;
+
+    stack_t stack{ stack_size };
+    thinks.reserve( count );
+
+    for ( int i = 0; i < count; ++i ) {
+        thinks.emplace_back( stack,
+        [&]( think_co::pull_type& c ) {
+            StackCommit();
+            StackConsume( 900 * 1024 );
+            StackShrink();
+        } );
+    }
+
+    timer_t timer;
+    for ( auto & think : thinks ) {
+        think();
+    }
+    double elapsed = timer.stop();
+    std::cout << "Thought for " << elapsed << " seconds." << std::endl;
+    
+    return 0;
+}
+#endif

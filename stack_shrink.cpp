@@ -170,6 +170,8 @@ int main()
 
     DbgDumpStack();
     std::cout << "Default stack\n" << std::endl;
+    StackConsume( 3 * 4 * 1024 );
+
 
     StackConsume( 100 * 1024 );
     std::cout << "100K consumed\n" << std::endl;
