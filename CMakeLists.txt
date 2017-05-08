@@ -4,6 +4,8 @@ set( CMAKE_MODULE_PATH ${CMAKE_CURRENT_SOURCE_DIR}/../cmake-utils/Modules )
 project (StackShrink)
 add_executable(StackShrink stack_shrink.cpp)
 
+add_executable(Baseline baseline.cpp)
+
 set(Boost_USE_STATIC_LIBS        ON)
 set(Boost_USE_MULTITHREADED      ON)
 
