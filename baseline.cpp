@@ -56,7 +56,6 @@ int main() {
     std::vector< think_fn > thinks;
     thinks.reserve( count );
 
-    int num = 0;
     for ( int i = 0; i < count; ++i ) {
         thinks.push_back( []() {
             StackConsume( 900 * 1024 );
