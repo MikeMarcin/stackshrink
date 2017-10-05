@@ -249,7 +249,7 @@ void TestStack( const char * which ) {
 void DbgDumpMemoryUsage() {
     PROCESS_MEMORY_COUNTERS memCounter;
     BOOL result = GetProcessMemoryInfo( GetCurrentProcess(), &memCounter, sizeof( memCounter ) );
-    std::cout << "##### Process Memory - " << std::fixed << std::setprecision( 2 ) << (double)memCounter.WorkingSetSize / (1024 * 1024) << "MB" << std::endl;
+    std::cout << "##### Process Memory - " << std::fixed << std::setprecision( 2 ) << (double)memCounter.WorkingSetSize / (1024 * 1024) << "MiB" << std::endl;
 }
 
 
@@ -345,7 +345,7 @@ int main() {
     for ( int64_t n = 1;; ++n ) {
         auto p = VirtualAlloc( 0, n * one_tb, MEM_RESERVE, PAGE_READWRITE );
         if ( p == nullptr ) {
-            std::cout << "Reserved up to " << n << "TB." << std::endl;
+            std::cout << "Reserved up to " << n << "TiB." << std::endl;
             return 0;
         }
         VirtualFree( p, 0, MEM_RELEASE );

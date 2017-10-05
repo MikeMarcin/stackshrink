@@ -18,3 +18,6 @@ target_link_libraries( CoShrink ${Boost_LIBRARIES} )
 
 add_executable(AweShrink awe_shrink.cpp)
 target_link_libraries( AweShrink ${Boost_LIBRARIES} )
+
+add_executable(ShmemShrink shmem_shrink.cpp)
+target_link_libraries( ShmemShrink ${Boost_LIBRARIES} )
